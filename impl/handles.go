@@ -143,6 +143,24 @@ func (ht *HandleTable) clear() {
 	ht.size = 0
 }
 
+func (ht *HandleTable) LookupObject(handle int32) interface{} {
+	val := ht.objs[handle]
+	switch val.(type) {
+	case string:
+		str := java.NewString(val.(string))
+		return &str
+	case *java.Object:
+		return val.(*java.Object)
+	case *java.Class:
+		return val
+	case *LoadedClass:
+		return &(val.(*LoadedClass).Class)
+
+	default:
+		panic("unsolved case in LookupObject")
+	}
+}
+
 // 计算hash
 func Hash(obj interface{}) int {
 	if obj == nil {

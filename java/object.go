@@ -8,13 +8,14 @@ type Object struct {
 	Extend     interface{} //扩展
 }
 
-func (c *Object) GetFieldDescriptor(fieldName string) *string {
+func (c *Object) GetFieldDescriptor(fieldName string) *Descriptor {
 	if c.clazz == nil {
 		return nil
 	}
 	for _, field := range c.clazz.Fields {
 		if field.Name == fieldName {
-			return &field.Descriptor
+			descriptor := Descriptor(field.Descriptor)
+			return &descriptor
 		}
 	}
 	return nil
@@ -30,10 +31,10 @@ func NewInstance(class Class) Object {
 
 //对基本类型进行包装
 
-func NewStrObj(str string) Object {
+func NewString(str string) Object {
 	object := Object{
 		clazz:      &StringClass,
-		Descriptor: "string",
+		Descriptor: StringType,
 		//WriteObject: nil,
 		Fields: make(map[string]interface{}),
 		Extend: nil,
@@ -75,8 +76,23 @@ func NewBool(val bool) Object {
 
 func (o Object) UnWrap() interface{} {
 	descriptor := o.Descriptor
-	if descriptor == "string" || o.Descriptor == "int" {
+	if descriptor == "java.lang.String" || o.Descriptor.IsPrimitive() {
 		return o.Fields["val"]
 	}
 	return o
+}
+
+func (c *Object) SuperClass() *Class {
+	if c.clazz == nil {
+		return nil
+	}
+	if c.clazz.Super == "" {
+		return nil
+	}
+	return LoadClass(c.clazz.Super)
+}
+
+func MakeObject(data interface{}) *Object {
+
+	return &Object{}
 }

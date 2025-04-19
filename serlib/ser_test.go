@@ -3,7 +3,6 @@ package serlib
 import (
 	"fmt"
 	serialize "goserja/impl"
-
 	"io/ioutil"
 	"os"
 	"testing"
@@ -59,4 +58,26 @@ func TestCc2(t *testing.T) {
 	js.WriteObject(cc2)
 	data := js.GetByteData()
 	write(data)
+}
+
+func TestProxy(t *testing.T) {
+	cc1 := Cc1("calc")
+	js := serialize.NewJavaSerializer()
+	js.WriteObject(cc1)
+	data := js.GetByteData()
+	write(data)
+
+}
+
+func TestDes(t *testing.T) {
+	data, err := os.ReadFile("a.ser")
+	if err != nil {
+		return
+	}
+	object, err := serialize.ReadObject(data)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	fmt.Println(object)
 }

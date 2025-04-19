@@ -1,6 +1,7 @@
 package java
 
 import (
+	"errors"
 	"reflect"
 	"strings"
 )
@@ -8,14 +9,22 @@ import (
 type Class struct {
 	Name             string
 	Super            string
-	ClassPath        string
 	SerialVersionUID uint64
 	AccessFlags
-	Implements []Interface
-	Fields     []Field
+	IsProxy        bool
+	ProxyInterface []Interface
+	Implements     []Interface
+	Fields         []Field
 	//自定义writeObject逻辑 ,用于写入字段数据
 	WriteObjectData func(ser interface{}, obj *Object)
-	ReadObjectData  func(ser interface{}, obj *Object)
+	ReadObjectData  func(ser interface{}, obj *Object) error
+}
+
+func (c *Class) SuperClass() *Class {
+	if c == nil || c.Super == "" {
+		return nil
+	}
+	return LoadClass(c.Super)
 }
 
 func (c *Class) IsAssignableFrom(fullClassName string) bool {
@@ -36,31 +45,6 @@ func (c *Class) IsAssignableFrom(fullClassName string) bool {
 
 type Interface struct {
 	Name string
-}
-
-// ComputerFlag 计算序列化类信息中的flag
-/**
-if (externalizable) {
-	flags |= ObjectStreamConstants.SC_EXTERNALIZABLE;
-	int protocol = out.getProtocolVersion();
-	if (protocol != ObjectStreamConstants.PROTOCOL_VERSION_1) {
-	flags |= ObjectStreamConstants.SC_BLOCK_DATA;
-}
-} else if (serializable) {
-flags |= ObjectStreamConstants.SC_SERIALIZABLE;
-}
-if (hasWriteObjectData) {
-flags |= ObjectStreamConstants.SC_WRITE_METHOD;
-}
-if (isEnum) {
-flags |= ObjectStreamConstants.SC_ENUM;
-}
-*/
-func (c *Class) ComputerFlag() byte {
-	if c.WriteObjectData != nil {
-		return 0x03
-	}
-	return 0x02
 }
 
 // GetSerialVersionUID 获取序列化UID
@@ -106,7 +90,7 @@ func (c *Class) newInstance(loader *ClassLoader) Object {
 		}
 		//除去数组描述
 		desc := strings.ReplaceAll(field.Descriptor, "[]", "")
-		_, ok = typeMap[getBaseType(desc)]
+		_, ok = reverseTypeMap[desc]
 		if ok {
 			obj.Fields[field.Name] = initBaseTypeArrayValue(field.Descriptor)
 			continue
@@ -199,19 +183,75 @@ func (c *Class) isAssign(javaType string) bool {
 	return false
 }
 
+func (c *Class) MustEquals(class *Class) error {
+	if c.Name != class.Name {
+		return errors.New("class name mismatch")
+	}
+	if c.SerialVersionUID != class.SerialVersionUID {
+		return errors.New("class serial version UID mismatch")
+	}
+	if len(c.Fields) != len(class.Fields) {
+		num1 := 0
+		num2 := 0
+		for _, f := range c.Fields {
+			if !f.IsTransient() {
+				num1++
+			}
+		}
+		for _, f := range class.Fields {
+			if !f.IsTransient() {
+				num2++
+			}
+		}
+		if num1 != num2 {
+			return errors.New("class fields length mismatch")
+		}
+
+	}
+	return nil
+}
+
+func (c *Class) IsPrimitive() bool {
+	if strings.Contains(c.Name, "[") {
+		if !strings.Contains(c.Name, "]") {
+			return MakeDescriptor(c.Name).IsPrimitive()
+		}
+	}
+	if _, ok := PrimitiveMap[c.Name]; ok {
+		return true
+	}
+	if _, ok := reverseTypeMap[c.Name]; ok {
+		return true
+	}
+	return false
+}
+
 type Jar struct {
-	Classes      []Class
-	Interfaces   []Interface
-	Name         string
-	LocationDesc string //定位信息
-	Note         string
+	Classes           []Class
+	Interfaces        []Interface
+	Name              string
+	LocationDesc      string //定位信息
+	HookRegisterClass func(class *Class) Class
+	Note              string
 }
 
 func (j *Jar) LoadJar(loader *ClassLoader) {
 	for _, class := range j.Classes {
-		loader.RegisterClass(class)
+		if j.HookRegisterClass != nil {
+			clazz := class
+			hookClazz := j.HookRegisterClass(&clazz)
+			loader.RegisterClass(hookClazz)
+		} else {
+			loader.RegisterClass(class)
+		}
 	}
 	for _, i := range j.Interfaces {
 		loader.RegisterInterface(i)
 	}
+	j.HookRegisterClass = nil
+}
+
+func (j *Jar) HookDefineClass(f func(class *Class) Class) *Jar {
+	j.HookRegisterClass = f
+	return j
 }

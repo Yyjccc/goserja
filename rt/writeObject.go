@@ -6,7 +6,8 @@ import (
 )
 
 func init() {
-	java.TemplatesImplClass.WriteObjectData = func(ser interface{}, obj *java.Object) {
+	loader := java.GetContextClassLoader()
+	TemplatesImplWriteObject := func(ser interface{}, obj *java.Object) {
 		serializer := ser.(*impl.JavaSerializer)
 		serializer.DefaultWriteObject(obj)
 		////写入 _transletIndex
@@ -15,23 +16,18 @@ func init() {
 		//serializer.WriteInt(0)
 		serializer.WriteBoolean(false)
 	}
+	java.TemplatesImplClass.WriteObjectData = TemplatesImplWriteObject
+	loader.RegisterWriteObject(TemplatesImplWriteObject, java.TemplatesImplClass.Name)
 
-	java.HashMapClass.WriteObjectData = func(ser interface{}, obj *java.Object) {
+	HashMapWriteObject := func(ser interface{}, obj *java.Object) {
 		serializer := ser.(*impl.JavaSerializer)
-		serializer.SetBlkMode(false)
-		//写入loadFactor
-		serializer.GetWriter().WriteFloat32(obj.Fields["loadFactor"].(float32))
-		//写入threshold
-		serializer.GetWriter().WriteInt(int32(obj.Fields["threshold"].(int)))
-
+		serializer.DefaultWriteObject(obj)
 		hashMap := obj.Extend.(*HashMap)
-		serializer.SetBlkMode(true)
 		//写入容量
 		serializer.GetWriter().WriteInt(int32(hashMap.Capacity))
 		//写入size
 		size := obj.Fields["size"].(int)
 		serializer.GetWriter().WriteInt(int32(size))
-
 		serializer.SetBlkMode(false)
 		//遍历hash表+链表节点
 		tab := obj.Fields["tab"].([]*java.Object)
@@ -48,13 +44,13 @@ func init() {
 			}
 		}
 	}
+	loader.RegisterWriteObject(HashMapWriteObject, java.HashMapClass.Name)
+	java.HashMapClass.WriteObjectData = HashMapWriteObject
 
-	java.PriorityQueueClass.WriteObjectData = func(ser interface{}, obj *java.Object) {
+	//PriorityQueue
+	PriorityQueueWriteObject := func(ser interface{}, obj *java.Object) {
 		serializer := ser.(*impl.JavaSerializer)
-		serializer.SetBlkMode(false)
-		//serializer.WriteInt(obj.Fields["size"].(int))
-		serializer.DefualtWriteData(obj)
-		serializer.SetBlkMode(true)
+		serializer.DefaultWriteObject(obj)
 		//write size
 		pq := obj.Extend.(*PriorityQueue)
 		serializer.WriteInt(pq.GetSize())
@@ -67,4 +63,6 @@ func init() {
 			serializer.WriteAllTypeData(node, nil)
 		}
 	}
+	loader.RegisterWriteObject(PriorityQueueWriteObject, java.PriorityQueueClass.Name)
+	java.PriorityQueueClass.WriteObjectData = PriorityQueueWriteObject
 }

@@ -13,6 +13,10 @@ var NULL = Object{
 }
 
 const (
+	StringType = "java.lang.String"
+)
+
+const (
 	AccPublic       = 0x0001 //      CcFM_____			public
 	AccPrivate      = 0x0002 //      _cFM_____			private
 	AccProtected    = 0x0004 //      _cFM_____			protected
@@ -68,8 +72,28 @@ func (flags AccessFlags) IsMandated() bool     { return flags&AccMandated != 0 }
 type Descriptor string
 
 func (d Descriptor) IsPrimitive() bool {
-	_, ok := reverseTypeMap[string(d)]
+	key := strings.ReplaceAll(string(d), "[]", "")
+	_, ok := reverseTypeMap[key]
 	return ok
+}
+
+func MakeDescriptor(jvmDesc string) Descriptor {
+	if desc, ok := typeMap[jvmDesc]; ok {
+		return Descriptor(desc)
+	}
+	if strings.HasPrefix(jvmDesc, "L") {
+		desc := strings.Replace(jvmDesc, "L", "", 1)
+		desc = strings.ReplaceAll(desc, "/", ".")
+		desc = strings.ReplaceAll(desc, ";", "")
+		return Descriptor(desc)
+	}
+	if strings.HasPrefix(jvmDesc, "[") {
+		dim := strings.Count(jvmDesc, "[")
+		typeDesc := strings.ReplaceAll(jvmDesc, "[", "")
+		typeName := string(MakeDescriptor(typeDesc))
+		return Descriptor(typeName + strings.Repeat("[]", dim))
+	}
+	return Descriptor(jvmDesc)
 }
 
 func (d Descriptor) IsArray() bool {
@@ -79,6 +103,12 @@ func (d Descriptor) IsArray() bool {
 func (d Descriptor) Value() string {
 	val := string(d)
 	// 如果是基本类型，直接返回描述符
+	if val == "" {
+		return ""
+	}
+	if strings.HasPrefix(val, "[") {
+		return val
+	}
 	switch val {
 	case "null":
 		return "null"
@@ -102,47 +132,14 @@ func (d Descriptor) Value() string {
 		return "V"
 	}
 
-	// 如果是数组类型，例如 [][]java.lang.String [][]byte
-	if strings.HasPrefix(val, "[") {
+	// 如果是数组类型，例如 java.lang.String[] byte[]
+	if strings.Contains(val, "[") {
 		fullName := strings.ReplaceAll(val, "[]", "")
 		count := strings.Count(val, "[]")
 		return strings.Repeat("[", count) + Descriptor(fullName).Value()
 	}
 	// 否则是普通类名，添加前缀 "L" 和后缀 ";"
 	return "L" + strings.ReplaceAll(val, ".", "/") + ";"
-}
-
-// _toDescriptor 将类路径转为类型描述符
-func _toDescriptor(classPath string) string {
-	// 如果是基本类型，直接返回描述符
-	switch classPath {
-	case "byte":
-		return "B"
-	case "char":
-		return "C"
-	case "double":
-		return "D"
-	case "float":
-		return "F"
-	case "int":
-		return "I"
-	case "long":
-		return "J"
-	case "short":
-		return "S"
-	case "boolean":
-		return "Z"
-	case "void":
-		return "V"
-	}
-
-	// 如果是数组类型，例如 [Ljava/lang/String;
-	if strings.HasPrefix(classPath, "[") {
-		return classPath
-	}
-
-	// 否则是普通类名，添加前缀 "L" 和后缀 ";"
-	return "L" + classPath + ";"
 }
 
 // 类型映射表，用于将 JVM 类型标记转换为 Java 类型
@@ -169,9 +166,12 @@ var reverseTypeMap = map[string]string{
 	"short":   "S",
 	"boolean": "Z",
 }
-
-func getBaseType(raw string) string {
-	return _toDescriptor(raw)
+var arrClazzUIDMap = map[string]uint64{
+	"[[B":                 10206066974587786966,
+	"[B":                  12462330947884831968,
+	"[Ljava.lang.Class;":  JavaLongStrToUint64("-6118465897992725863L"),
+	"[Ljava.lang.Object;": 10434374826863044972,
+	"[Lorg.apache.commons.collections.Transformer;": JavaLongStrToUint64("-4803604734341277543L"),
 }
 
 func initBaseTypeValue(descriptor string) interface{} {
@@ -199,39 +199,6 @@ func initBaseTypeValue(descriptor string) interface{} {
 	}
 }
 
-// ToClassDescriptor 将 Java 全类名转换为类描述符（支持数组）
-func ToClassDescriptor(fullClassName string) string {
-	if s, ok := reverseTypeMap[fullClassName]; ok {
-		return s
-	}
-	arrayDim := 0
-	// 统计数组维度，并去掉 "[]" 部分
-	for strings.HasSuffix(fullClassName, "[]") {
-		arrayDim++
-		fullClassName = strings.TrimSuffix(fullClassName, "[]")
-	}
-
-	var descriptor string
-	if primitive, exists := reverseTypeMap[fullClassName]; exists {
-		// 基本数据类型直接映射
-		descriptor = primitive
-	} else {
-		// 对象类型，加前缀 "L" 和后缀 ";"
-		descriptor = "L" + strings.ReplaceAll(fullClassName, ".", "/") + ";"
-	}
-
-	// 根据数组维度加前缀 "["
-	return strings.Repeat("[", arrayDim) + descriptor
-}
-
-var arrClazzUIDMap = map[string]uint64{
-	"[[B":                 10206066974587786966,
-	"[B":                  12462330947884831968,
-	"[Ljava.lang.Class;":  JavaLongStrToUint64("-6118465897992725863L"),
-	"[Ljava.lang.Object;": 10434374826863044972,
-	"[Lorg.apache.commons.collections.Transformer;": JavaLongStrToUint64("-4803604734341277543L"),
-}
-
 func AddArrClassSerUID(desc string, serUID uint64) {
 	arrClazzUIDMap[desc] = serUID
 }
@@ -256,7 +223,8 @@ func JavaLongStrToUint64(s string) uint64 {
 
 // 获取序列化uid 数组类
 func GetSerUIDbyName(desc string) uint64 {
-	if v, ok := arrClazzUIDMap[desc]; ok {
+	name := strings.ReplaceAll(Descriptor(desc).Value(), "/", ".")
+	if v, ok := arrClazzUIDMap[name]; ok {
 		return v
 	}
 	return 0

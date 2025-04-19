@@ -7,8 +7,11 @@ import (
 //HashMap方法实现
 
 // 默认初始容量
-const initialCapacity = 16
-const loadFactor = float32(0.75)
+const (
+	initialCapacity  = 16
+	loadFactor       = float32(0.75)
+	MAXIMUM_CAPACITY = 1 << 30
+)
 
 type HashMap struct {
 	java.Object
@@ -43,14 +46,36 @@ func hash(key interface{}) int {
 
 // 计算大于等于指定值的最小 2 的幂
 func tableSizeFor(cap int) int {
+	// 处理0及负数的特殊情况
+	if cap <= 0 {
+		return 1
+	}
+
+	// 核心位操作算法
 	n := cap - 1
 	n |= n >> 1
 	n |= n >> 2
 	n |= n >> 4
 	n |= n >> 8
 	n |= n >> 16
+
+	// 处理32位与64位差异
+	if intSize == 64 { // 根据系统位数自动适应
+		n |= n >> 32
+	}
+
+	// 边界值处理
+	if n < 0 { // 处理初始cap=1的特殊情况
+		return 1
+	}
+	if n >= MAXIMUM_CAPACITY-1 { // 注意减1操作
+		return MAXIMUM_CAPACITY
+	}
 	return n + 1
 }
+
+// 自动检测系统位数
+var intSize = 32 << (^uint(0) >> 63)
 
 // 扩容 HashMap
 func (hm *HashMap) resize() {

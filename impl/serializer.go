@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"goserja/java"
 	"math"
-	"reflect"
 	"strings"
 )
 
@@ -14,21 +13,21 @@ const (
 	STREAM_VERSION = 5
 	baseWireHandle = 0x7e0000
 
-	TC_NULL           = 0x70
-	TC_REFERENCE      = 0x71
-	TC_CLASSDESC      = 0x72
-	TC_OBJECT         = 0x73
-	TC_STRING         = 0x74 //短字符串(长度<65535)
-	TC_ARRAY          = 0x75
-	TC_CLASS          = 0x76
-	TC_BLOCKDATA      = 0x77 // Block 数据标志
-	TC_ENDBLOCKDATA   = 0x78
-	TC_RESET          = 0x79
-	TC_BLOCKDATALONG  = 0x7a // 长块数据标记
-	TC_EXCEPTION      = 0x7b
-	TC_LONGSTRING     = 0x7c //长字符串
-	TC_PROXYCLASSDESC = 0x7d
-	TC_ENUM           = 0x7E
+	TC_NULL          = byte(0x70)
+	TC_REFERENCE     = byte(0x71)
+	TC_CLASSDESC     = byte(0x72)
+	TC_OBJECT        = byte(0x73)
+	TC_STRING        = byte(0x74) //短字符串(长度<65535)
+	TC_ARRAY         = byte(0x75)
+	TC_CLASS         = byte(0x76)
+	TC_BLOCKDATA     = byte(0x77) // Block 数据标志
+	TC_ENDBLOCKDATA  = byte(0x78)
+	TC_RESET         = byte(0x79)
+	TC_BLOCKDATALONG = byte(0x7a) // 长块数据标记
+	// TC_EXCEPTION      = 0x7b
+	TC_LONGSTRING     = byte(0x7c) //长字符串
+	TC_PROXYCLASSDESC = byte(0x7d)
+	TC_ENUM           = byte(0x7E)
 
 	SC_WRITE_METHOD   = 0x01
 	SC_SERIALIZABLE   = 0x02
@@ -37,14 +36,28 @@ const (
 	SC_ENUM           = 0x10
 )
 
+func ComputerFlag(c *java.Class) byte {
+	flag := byte(0x00)
+	if c.WriteObjectData != nil {
+		flag |= SC_WRITE_METHOD
+	}
+	for _, i := range c.Implements {
+		if i == java.Serializable {
+			flag |= SC_SERIALIZABLE
+			break
+		}
+	}
+	if c.IsEnum() {
+		flag |= SC_ENUM
+	}
+	return flag
+}
+
 // JavaSerializer 负责序列化逻辑
 type JavaSerializer struct {
 	writer  *BlockDataWriter
 	handles *HandleTable
-}
-
-type JavaObject interface {
-	*java.Object | *java.ProxyObject | *java.Class
+	curDesc *java.Class
 }
 
 func (j *JavaSerializer) GetWriter() *BlockDataWriter {
@@ -76,6 +89,21 @@ func (js *JavaSerializer) SetBlkMode(b bool) {
 
 func (js JavaSerializer) GetByteData() []byte {
 	return js.writer.Bytes()
+}
+
+func (js *JavaSerializer) Reset() {
+	js.SetBlkMode(false)
+	js.writer.WriteByte(TC_RESET)
+	js.handles.Clear()
+	js.SetBlkMode(true)
+}
+
+func (js *JavaSerializer) WriteEnum(enum *java.Enum) {
+	js.writer.WriteByte(TC_ENUM)
+	js.writeClassDesc(&enum.Class)
+	//writeClassDesc((sdesc.forClass() == Enum.class) ? desc : sdesc, false);
+	js.handles.Assign(enum)
+	js.WriteString(enum.Name)
 }
 
 func (js *JavaSerializer) writeObject(obj *java.Object) {
@@ -112,31 +140,45 @@ func (js *JavaSerializer) writeObject(obj *java.Object) {
 }
 
 func (js *JavaSerializer) DefualtWriteData(obj *java.Object) {
-	for _, field := range obj.GetClass().Fields {
+	for _, field := range js.curDesc.Fields {
 		if field.AccessFlags.IsTransient() {
 			// 非序列化字段跳过
 			continue
 		}
 		value := obj.Fields[field.Name]
 		value = UwrapObj(value)
-		js.writeFieldValue(java.ToClassDescriptor(field.Descriptor), value)
+		js.writeFieldValue(java.Descriptor(field.Descriptor), value)
 	}
 }
 
 // 字段数据写入
 func (js *JavaSerializer) writeFieldData(obj *java.Object) {
+	//获取所有父类
+	classList := []*java.Class{obj.GetClass()}
+	curClazz := obj.GetClass()
+	for {
+		superClazz := curClazz.SuperClass()
+		if superClazz == nil {
+			break
+		}
+		classList = append(classList, superClazz)
+		curClazz = superClazz
+	}
 
-	if obj.GetClass().WriteObjectData != nil {
-		// 如果存在writeObject方法则调用
-		js.SetBlkMode(true)
-		obj.GetClass().WriteObjectData(js, obj)
-		js.SetBlkMode(false)
-		js.writer.WriteByte(TC_ENDBLOCKDATA)
+	for _, class := range classList {
+		js.curDesc = class
+		if class.WriteObjectData != nil {
+			// 如果存在writeObject方法则调用
+			js.SetBlkMode(true)
+			class.WriteObjectData(js, obj)
+			js.SetBlkMode(false)
+			js.writer.WriteByte(TC_ENDBLOCKDATA)
 
-	} else {
-		// DefaultWriteData 默认方式写入字段数据
-		js.SetBlkMode(false)
-		js.DefualtWriteData(obj)
+		} else {
+			// DefaultWriteData 默认方式写入字段数据
+			js.SetBlkMode(false)
+			js.DefualtWriteData(obj)
+		}
 	}
 
 }
@@ -146,18 +188,21 @@ func (js *JavaSerializer) writeHandle(offset int) {
 	js.writer.WriteInt(int32(baseWireHandle + offset))
 }
 
-func (js *JavaSerializer) writeClassDesc(o interface{}) {
-	switch o.(type) {
-	case *java.ProxyObject:
-		js.writeProxyDesc(o.(*java.ProxyObject))
-		break
-	case *java.Class:
-		js.writeNonProxyDesc(o.(*java.Class))
-		break
-	case *java.Object:
-		js.writeNonProxyDesc(o.(*java.Object).GetClass())
-		break
+func (js *JavaSerializer) writeClassDesc(clazz *java.Class) {
+	if clazz == nil {
+		js.writer.WriteByte(TC_NULL)
+		return
 	}
+	if handle := js.handles.Lookup(clazz); handle != -1 {
+		js.writeHandle(handle)
+		return
+	}
+	if clazz.IsProxy {
+		js.writeProxyDesc(clazz)
+	} else {
+		js.writeNonProxyDesc(clazz)
+	}
+
 }
 
 // 类描述写入 writeNonProxyDesc
@@ -172,14 +217,18 @@ func (js *JavaSerializer) writeNonProxyDesc(class *java.Class) {
 
 	js.writer.WriteByte(TC_CLASSDESC)
 
-	//className := strings.ReplaceAll(class.Name, ".", "/")
 	//1.写入类名
-	js.writer.WriteString(class.Name)
+	// 数组类名混合写法
+	name := class.Name
+	if strings.Contains(name, "[]") {
+		name = strings.ReplaceAll(java.Descriptor(name).Value(), "/", ".")
+	}
+	js.writer.WriteString(name)
 	//2.写入uid
 	js.writer.WriteUint64(class.GetSerialVersionUID()) // serialVersionUID
 	//3.写入flag
 	//计算flag
-	js.writer.WriteByte(class.ComputerFlag()) // SC_SERIALIZABLE
+	js.writer.WriteByte(ComputerFlag(class)) // SC_SERIALIZABLE
 
 	var validFields []java.Field
 	for _, f := range class.Fields {
@@ -208,70 +257,32 @@ func (js *JavaSerializer) writeNonProxyDesc(class *java.Class) {
 
 }
 
-func (js *JavaSerializer) writeProxyDesc(proxy *java.ProxyObject) {
+func (js *JavaSerializer) writeProxyDesc(proxy *java.Class) {
 	js.writer.WriteByte(TC_PROXYCLASSDESC)
 	js.handles.Assign(*proxy)
-	js.WriteInt(len(proxy.Interfaces))
-	for _, i := range proxy.Interfaces {
+	js.WriteInt(len(proxy.ProxyInterface))
+	for _, i := range proxy.ProxyInterface {
 		js.writer.WriteString(i.Name)
 	}
 	js.writer.WriteByte(TC_ENDBLOCKDATA)
-
-	//writeClassDesc(desc.getSuperDesc(), false);
+	js.writeClassDesc(proxy.SuperClass())
 }
 
 // 字段描述写入
 func (js *JavaSerializer) writeFieldDescriptor(field java.Field) {
-	typeCode := js.getTypeCode(field.Descriptor)
+	descriptor := field.GetDescriptor()
+	typeCode := descriptor[0]
 	//1.写入类型描述符
 	js.writer.WriteByte(typeCode)
 	//2.写入字段名称
 	js.writer.WriteString(field.Name)
 	//3.如果是私有变量写入 全量的类型描述符
 	if rune(typeCode) == 'L' || rune(typeCode) == '[' {
-		js.WriteString(java.ToClassDescriptor(field.Descriptor))
+		js.WriteString(descriptor)
 	}
 }
 
-// 类型编码映射
-func (js *JavaSerializer) getTypeCode(descriptor string) byte {
-	switch descriptor {
-	case "byte":
-		return 'B' // byte
-	case "char":
-		return 'C' // char
-	case "double":
-		return 'D' // double
-	case "float":
-		return 'F' // float
-	case "int":
-		return 'I' // int
-	case "long":
-		return 'J' // long
-	case "short":
-		return 'S' // short
-	case "boolean":
-		return 'Z' // boolean
-	case "java.lang.String":
-		return 'L'
-	default:
-		if strings.HasPrefix(descriptor, "L") {
-			return 'L' // 对象
-		}
-		if strings.Contains(descriptor, "[]") {
-			return '[' // 数组
-		}
-		return 'L'
-	}
-}
-
-// 判断是否为数组类型
-func IsArrayOrSlice(val interface{}) bool {
-	t := reflect.TypeOf(val)
-	return t.Kind() == reflect.Array || t.Kind() == reflect.Slice
-}
-
-func (js *JavaSerializer) WriteAllTypeData(val interface{}, desc *string) {
+func (js *JavaSerializer) WriteAllTypeData(val interface{}, desc *java.Descriptor) {
 	if val == nil {
 		js.writer.WriteByte(TC_NULL)
 		return
@@ -311,7 +322,7 @@ func (js *JavaSerializer) WriteAllTypeData(val interface{}, desc *string) {
 	default:
 		if IsArrayOrSlice(val) {
 
-			var descriptor string
+			var descriptor java.Descriptor
 			if desc == nil {
 				descriptor = GetDesc(val)
 			} else {
@@ -325,7 +336,7 @@ func (js *JavaSerializer) WriteAllTypeData(val interface{}, desc *string) {
 }
 
 // 字段值写入
-func (js *JavaSerializer) writeFieldValue(descriptor string, value interface{}) {
+func (js *JavaSerializer) writeFieldValue(descriptor java.Descriptor, value interface{}) {
 	value = ConvertToPointer(value)
 	js.WriteAllTypeData(value, &descriptor)
 }
@@ -383,6 +394,7 @@ func (js *JavaSerializer) WriteObject(val interface{}) error {
 	case string:
 		js.WriteString(val.(string))
 		break
+
 	default:
 		return fmt.Errorf("unsupported serialize go type:%v", val)
 	}
@@ -400,13 +412,12 @@ func (js *JavaSerializer) WriteBoolean(val bool) {
 // 对应java 中 defaultWriteObject 方法 ,在writeObject方法中使用
 func (js *JavaSerializer) DefaultWriteObject(obj *java.Object) {
 	js.SetBlkMode(false)
-	js.DefaultWriteFields(obj)
+	js.defaultWriteFields(obj)
 	js.SetBlkMode(true)
 }
 
-// DefaultWriteFields 对应java defaultWriteFields方法
-func (js *JavaSerializer) DefaultWriteFields(obj *java.Object) {
-
+// defaultWriteFields 对应java defaultWriteFields方法
+func (js *JavaSerializer) defaultWriteFields(obj *java.Object) {
 	//写入基本数据类型
 	for _, field := range obj.GetClass().Fields {
 		if !field.IsTransient() && field.IsPrimitive() {
@@ -416,7 +427,7 @@ func (js *JavaSerializer) DefaultWriteFields(obj *java.Object) {
 	//写入其他可序列化的类型
 	for _, field := range obj.GetClass().Fields {
 		if !field.IsTransient() && !field.IsPrimitive() {
-			descriptor := java.ToClassDescriptor(field.Descriptor)
+			descriptor := java.Descriptor(field.Descriptor)
 			js.WriteAllTypeData(obj.Fields[field.Name], &descriptor)
 		}
 

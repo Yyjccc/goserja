@@ -6,15 +6,32 @@ import (
 	"strings"
 )
 
+var PrimitiveArrayTypeMap = map[string]reflect.Type{
+	"bool":   reflect.TypeOf(false),
+	"byte":   reflect.TypeOf(byte(0)),
+	"short":  reflect.TypeOf(int16(0)),
+	"char":   reflect.TypeOf(int16(0)),
+	"int":    reflect.TypeOf(int32(0)),
+	"long":   reflect.TypeOf(int64(0)),
+	"float":  reflect.TypeOf(float32(0)),
+	"double": reflect.TypeOf(float64(0)),
+}
+
+// 判断是否为数组类型
+func IsArrayOrSlice(val interface{}) bool {
+	t := reflect.TypeOf(val)
+	return t.Kind() == reflect.Array || t.Kind() == reflect.Slice
+}
+
 // 序列化 数组类型
-func (js *JavaSerializer) writeArray(desc string, val interface{}) {
+func (js *JavaSerializer) writeArray(desc java.Descriptor, val interface{}) {
 
 	length, _ := getSliceLength(val)
 	if length == 0 {
 		js.writer.WriteByte(TC_NULL)
 		return
 	}
-	className := strings.ReplaceAll(desc, "/", ".")
+	className := string(desc)
 	clazz := &java.Class{
 		Name:             className,
 		SerialVersionUID: java.GetSerUIDbyName(className),
@@ -28,7 +45,7 @@ func (js *JavaSerializer) writeArray(desc string, val interface{}) {
 	js.handles.Assign(val)
 
 	// 检查 data 是否为切片或数组
-	switch desc {
+	switch desc.Value() {
 	case "":
 		return
 	case "[B":
@@ -36,6 +53,7 @@ func (js *JavaSerializer) writeArray(desc string, val interface{}) {
 		js.writer.WriteInt(int32((len(data))))
 		js.writer.WriteBytes(data)
 		return
+
 	case "[Ljava.lang.Class;":
 		js.writeClassArray(val.([]java.Class))
 		return
@@ -61,8 +79,8 @@ func (js *JavaSerializer) writeArray(desc string, val interface{}) {
 			}
 			if eleType.Kind() == reflect.Slice || eleType.Kind() == reflect.Array {
 				// 递归处理嵌套数组
-				if strings.HasPrefix(desc, "[") {
-					desc = desc[1:] // 去除第一个 '['
+				if strings.HasPrefix(desc.Value(), "[") {
+					desc = java.Descriptor(strings.Replace(string(desc), "[]", "", 1))
 				}
 				js.writeArray(desc, element)
 
@@ -81,36 +99,41 @@ func UwrapObj(val interface{}) interface{} {
 	return val
 }
 
-func GetDesc(val interface{}) string {
+func GetDesc(val interface{}) java.Descriptor {
 	depth := getSliceDepth(val)
 	element := getInnerElement(val)
 	element = UwrapObj(element)
 	if element == nil {
 		return ""
 	}
+	arrDims := strings.Repeat("[]", depth)
 	switch element.(type) {
 	case java.Class:
-		return strings.Repeat("[", depth) + "Ljava.lang.Class;"
+		return java.Descriptor("java.lang.Class" + arrDims)
 	case java.Object:
 		object := element.(java.Object)
 		if object.Descriptor != "" {
-			return strings.Repeat("[", depth) + "Ljava.lang.Object;"
+			return java.Descriptor("java.lang.Object" + arrDims)
 		}
-		return strings.Repeat("[", depth) + "L" + object.GetClass().Name + ";"
+		return java.Descriptor(object.GetClass().Name + arrDims)
 	case byte:
-		return strings.Repeat("[", depth) + "B"
+		return java.Descriptor("byte" + arrDims)
 	case int:
-		return strings.Repeat("[", depth) + "I"
+		return java.Descriptor("int" + arrDims)
+	case int32:
+		return java.Descriptor("int" + arrDims)
+	case int16:
+		return java.Descriptor("short" + arrDims)
 	case int64:
-		return strings.Repeat("[", depth) + "J"
+		return java.Descriptor("long" + arrDims)
 	case float32:
-		return strings.Repeat("[", depth) + "F"
+		return java.Descriptor("float" + arrDims)
 	case float64:
-		return strings.Repeat("[", depth) + "D"
+		return java.Descriptor("double" + arrDims)
 	case bool:
-		return strings.Repeat("[", depth) + "Z"
+		return java.Descriptor("bool" + arrDims)
 	case string:
-		return strings.Repeat("[", depth) + "Ljava.lang.String"
+		return java.Descriptor("java.lang.String" + arrDims)
 	}
 	return ""
 }

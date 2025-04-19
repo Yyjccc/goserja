@@ -86,18 +86,6 @@ func (bdw *BlockDataWriter) Bytes() []byte {
 	return bdw.underlying.Bytes()
 }
 
-func (js *JavaSerializer) writeBlockHeader(length int) {
-	if length <= 0xFF {
-		// 短块数据：TC_BLOCKDATA + 1字节长度
-		js.writer.WriteByte(TC_BLOCKDATA)
-		js.writer.WriteByte(byte(length))
-	} else {
-		// 长块数据：TC_BLOCKDATALONG + 4字节长度
-		js.writer.WriteByte(TC_BLOCKDATALONG)
-		js.writer.WriteUint32(uint32(length))
-	}
-}
-
 func (bdw *BlockDataWriter) WriteByte(b byte) {
 	if bdw.blockMode {
 		bdw.blockBuffer.WriteByte(b)

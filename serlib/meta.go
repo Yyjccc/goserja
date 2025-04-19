@@ -65,7 +65,7 @@ var (
 						AccessFlags: java.AccFinal | java.AccPrivate,
 					},
 					{
-						Name:        "iParamjava",
+						Name:        "iParamTypes",
 						Descriptor:  "java.lang.Class[]",
 						AccessFlags: java.AccFinal | java.AccPrivate,
 					},

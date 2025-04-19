@@ -18,7 +18,7 @@ type PriorityQueue struct {
 
 func NewJPriorityQueue() PriorityQueue {
 	pq := PriorityQueue{
-		Object:   java.PriorityQueueClass.NewInstance(nil),
+		Object:   java.LoadClass(java.PriorityQueueClass.Name).NewInstance(nil),
 		Capacity: defaultCapacity,
 	}
 	pq.Fields["size"] = 0
